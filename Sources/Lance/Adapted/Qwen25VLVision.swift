@@ -93,12 +93,15 @@ public enum LanceVision {
             k = k.reshaped(1, sequenceLength, numHeads, -1).transposed(0, 2, 1, 3)
             v = v.reshaped(1, sequenceLength, numHeads, -1).transposed(0, 2, 1, 3)
 
+            // E6 fix: the upstream copy accepted `attentionMask` and then passed `.none`,
+            // so EVERY block ran full attention — but only `fullattBlockIndexes` should;
+            // the rest are window-restricted. cosine vs Python went 0.506 → use the mask.
             let output = MLXFast.scaledDotProductAttention(
                 queries: q,
                 keys: k,
                 values: v,
                 scale: scale,
-                mask: .none
+                mask: .array(attentionMask)
             )
             .transposed(0, 2, 1, 3)
             .reshaped(sequenceLength, -1)
@@ -324,21 +327,29 @@ public enum LanceVision {
             return (combinedWindowIndex, uniqueCuWindowSeqlens)
         }
 
+        /// Block-diagonal boolean mask from cumulative segment boundaries — (1, 1, S, S),
+        /// true = may attend. Python realizes this by splitting q/k/v per segment and running
+        /// SDPA per window; one masked SDPA is equivalent.
+        ///
+        /// E6 fix (lance-mlx-swift): the upstream version built this with a subscript-setter
+        /// (`mask[0..., a..<b, a..<b] = true`) — a silent no-op in mlx-swift (proven in E6
+        /// run #2), yielding an all-false mask; and the Attention discarded it anyway.
+        /// Built functionally instead: segment id per position, mask = (seg_i == seg_j).
         func attentionMask(sequenceLength: Int, cuSeqlens: MLXArray) -> MLXArray {
-            // Create attention mask
-            let attentionMask = full(
-                [1, sequenceLength, sequenceLength],
-                values: false)
-
-            // Update mask for each sequence
-            let cuSeqlens = cuSeqlens.asArray(Int.self)
-            for i in 1 ..< cuSeqlens.count {
-                let start = cuSeqlens[i - 1]
-                let end = cuSeqlens[i]
-                attentionMask[0..., start ..< end, start ..< end] = MLXArray(true)
+            let bounds = cuSeqlens.asArray(Int.self)
+            let positions = MLXArray((0 ..< sequenceLength).map { Int32($0) })  // (S,)
+            // Interior boundaries only (drop leading 0 and trailing S).
+            let inner = bounds.dropFirst().dropLast().map { Int32($0) }
+            let segmentIds: MLXArray
+            if inner.isEmpty {
+                segmentIds = MLXArray.zeros([sequenceLength]).asType(.int32)
+            } else {
+                let b = MLXArray(Array(inner)).expandedDimensions(axis: 1)      // (B, 1)
+                segmentIds = (positions .>= b).asType(.int32).sum(axis: 0)      // (S,)
             }
-
-            return attentionMask
+            let mask = segmentIds.expandedDimensions(axis: 1)
+                .== segmentIds.expandedDimensions(axis: 0)                       // (S, S) bool
+            return mask.expandedDimensions(axis: 0).expandedDimensions(axis: 0)  // (1, 1, S, S)
         }
 
         public func callAsFunction(_ hiddenStates: MLXArray, frames: [THW]) -> MLXArray {
