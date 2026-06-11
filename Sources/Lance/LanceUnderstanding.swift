@@ -255,6 +255,23 @@ public final class LanceUnderstanding {
             if let best {
                 print("[LANCE_DEBUG] ref-diff vs \(best.name) (best pixel match)")
                 print("[LANCE_DEBUG]   pixel_values cosine=\(best.pixCos)")
+                // E6 run-#12 cross-feed probe: run the SWIFT patch_embed on the PYTHON
+                // pixels and diff against the reference's post_patch_embed. This splits the
+                // patch_embed seed exactly: ≈1.0 → the conv (op + sanitized weights) is
+                // faithful and the seed is the 0.9994 PIXEL INPUT (preprocess resampler)
+                // amplified by a linear map; <1.0 → the conv/weights themselves diverge.
+                if let refPixels = best.ref["pixel_values"],
+                   let refPostPE = best.ref["post_patch_embed"]
+                {
+                    let weightDtype = vision.patchEmbed.proj.weight.dtype
+                    let crossFed = vision.patchEmbed(refPixels.asType(weightDtype))
+                    let crossCos = cosine(crossFed, refPostPE)
+                    print("[LANCE_DEBUG]   CROSS-FEED swift-patchEmbed(python-pixels) "
+                        + "cosine=\(crossCos) "
+                        + (crossCos > 0.9995
+                            ? "→ conv faithful; SEED = pixel input (preprocess resampler)"
+                            : "→ conv/weights diverge (sanitize/layout)"))
+                }
                 let stages = vision.debug.stages
                 if let refIdx = best.ref["window_index"], let swiftIdx = stages["window_index"] {
                     let same = (swiftIdx.asType(.int32) .== refIdx.asType(.int32))
