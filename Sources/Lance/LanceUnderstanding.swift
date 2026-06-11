@@ -222,6 +222,48 @@ public final class LanceUnderstanding {
             padPositions: padPositions)
 
         if ProcessInfo.processInfo.environment["LANCE_DEBUG"] == "1" {
+            // Branch-2 tensor diff (E6 run #5): compare against the Python reference dump
+            // (tools/dump_vit_reference.py) when present and the grid matches.
+            // pixel mismatch → preprocess/patchify; pixel match + feature mismatch → ViT/sanitize.
+            let refPath = ProcessInfo.processInfo.environment["LANCE_VIT_REF"]
+                ?? "/Users/dustinnielson/Development/MLXEngine/lance-vit-ref-case01.safetensors"
+            if FileManager.default.fileExists(atPath: refPath),
+               let ref = try? MLX.loadArrays(url: URL(fileURLWithPath: refPath)),
+               let refPixels = ref["pixel_values"], let refFeatures = ref["image_features"],
+               let refGrid = ref["grid_thw"]
+            {
+                let refDims = refGrid.asArray(Int32.self)
+                let gridMatches = refDims.count >= 3 && Int(refDims[0]) == frame.t
+                    && Int(refDims[1]) == frame.h && Int(refDims[2]) == frame.w
+                if gridMatches {
+                    func cosine(_ a: MLXArray, _ b: MLXArray) -> Float {
+                        let x = a.asType(.float32).flattened()
+                        let y = b.asType(.float32).flattened()
+                        guard x.dim(0) == y.dim(0) else { return .nan }
+                        let d = (x * y).sum()
+                        let n = sqrt(x.square().sum()) * sqrt(y.square().sum())
+                        return (d / n).item(Float.self)
+                    }
+                    let pixCos = cosine(patches, refPixels)
+                    let featCos = cosine(imageFeatures, refFeatures)
+                    print("[LANCE_DEBUG] ref-diff (vs Python, grid \(frame.t)×\(frame.h)×\(frame.w)): "
+                        + "pixel_values cosine=\(pixCos) "
+                        + "(swift \(patches.dim(0))×\(patches.dim(1)) vs ref \(refPixels.dim(0))×\(refPixels.dim(1))) · "
+                        + "features cosine=\(featCos) "
+                        + "(swift \(imageFeatures.dim(0))×\(imageFeatures.dim(1)) vs ref \(refFeatures.dim(0))×\(refFeatures.dim(1)))")
+                    print("[LANCE_DEBUG] ref-diff verdict: "
+                        + (pixCos < 0.999
+                            ? "PIXELS DIVERGE → preprocess/patchify (sRGB/bicubic/normalize order or grid)"
+                            : (featCos < 0.99
+                                ? "pixels match, FEATURES DIVERGE → ViT forward / sanitize transpose"
+                                : "both match — ViT chain is parity-clean; suspicion moves back to the LLM side")))
+                } else {
+                    print("[LANCE_DEBUG] ref-diff: grid mismatch — swift \(frame.t)×\(frame.h)×\(frame.w) "
+                        + "vs ref \(refDims.prefix(3).map(String.init).joined(separator: "×")) "
+                        + "→ smart-resize itself diverges (preprocess)")
+                }
+            }
+
             let featNorm = sqrt(imageFeatures.asType(.float32).square().sum()).item(Float.self)
             let idx = MLXArray(padPositions.map { Int32($0) })
             let delta = (embeds[0..., idx, 0...] - textEmbeds[0..., idx, 0...])

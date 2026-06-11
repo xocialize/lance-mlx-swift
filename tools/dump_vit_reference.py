@@ -1,18 +1,17 @@
 #!/usr/bin/env python3
-"""Dump the Python reference ViT features for one Lance L1 oracle case.
+"""Dump the Python reference ViT tensors for one Lance L1 oracle case.
 
-E6 branch-2 tool: if the Swift ablation shows vision IS attended but answers stay
-wrong, the next check is ViT semantic parity. Run this from the Python port repo:
+E6 branch-2 tool: the Swift ablation proved vision is attended but semantically wrong,
+so this dumps the reference pixel_values (post-preprocess, pre-ViT) and image_features
+(post-merger) for direct tensor comparison against the Swift pipeline:
 
     cd /Volumes/DEV_ARCHIVE/lance-mlx
     uv run python /Users/dustinnielson/Development/MLXEngine/lance-mlx-swift/tools/dump_vit_reference.py \
-        --case 01 --out /tmp/lance_vit_ref_case01.safetensors
+        --case 01 --out /Users/dustinnielson/Development/MLXEngine/lance-vit-ref-case01.safetensors
 
-Then compare against the Swift side: with LANCE_VIT_DUMP=<path> set, the Swift
-runner writes its imageFeatures for the same case next to the reference; cosine
-< 0.99 on the flattened features ⇒ the defect is in preprocess/patchify/sanitize.
-Saves: pixel_values (pre-ViT, post-preprocess) and image_features (post-merger),
-so the two stages can be compared independently.
+The Swift runner (LANCE_DEBUG=1) auto-compares against that well-known path when the
+input grid matches. pixel_values mismatch -> preprocess/patchify; pixel match but
+feature mismatch -> ViT forward / sanitize transpose.
 """
 
 import argparse
@@ -46,17 +45,17 @@ def main() -> None:
     image = Image.open(image_path).convert("RGB")
 
     pipe = UnderstandingPipeline.from_pretrained(
-        lance_weights=str(snapshot),
-        vit_weights=str(snapshot / "vit.safetensors"),
+        lance_weights_dir=str(snapshot),
+        vit_safetensors=str(snapshot / "vit.safetensors"),
     )
 
-    inputs = pipe.processor(images=image, text="<|vision_start|><|image_pad|><|vision_end|>x",
-                            return_tensors="mlx")
+    text = "<|vision_start|><|image_pad|><|vision_end|>x"
+    inputs = pipe.processor(images=image, text=text, return_tensors="mlx")
     pixel_values = inputs["pixel_values"]
     grid_thw = inputs["image_grid_thw"]
-    features = pipe.vision_model(
-        pixel_values.astype(mx.bfloat16), grid_thw
-    )
+
+    vit_dtype = pipe.vision_model.patch_embed.proj.weight.dtype
+    features = pipe.vision_model(pixel_values.astype(vit_dtype), grid_thw)
 
     mx.save_safetensors(
         args.out,
