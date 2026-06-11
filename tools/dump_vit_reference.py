@@ -59,12 +59,15 @@ def staged_forward(vm, pixel_values, grid_thw):
     cu_seqlens = mx.cumsum(mx.concatenate(cu_seqlens).astype(mx.int32), axis=0)
     cu_seqlens = mx.pad(cu_seqlens, (1, 0), mode="constant", constant_values=0)
 
-    capture_blocks = {0, 7, 15, 23, 31}
+    # Fine ladder (run #8 plan): every block; crater span 16–23 split into
+    # post-attention vs post-MLP via the block's own submodules in residual order.
     for layer_num, blk in enumerate(vm.blocks):
         cu = cu_seqlens if layer_num in vm.fullatt_block_indexes else cu_window_seqlens
-        h = blk(h, cu_seqlens=cu, rotary_pos_emb=rotary)
-        if layer_num in capture_blocks:
-            stages[f"post_block{layer_num:02d}"] = h
+        post_attn = h + blk.attn(blk.norm1(h), cu_seqlens=cu, rotary_pos_emb=rotary)
+        if 16 <= layer_num <= 23:
+            stages[f"post_attn{layer_num:02d}"] = post_attn
+        h = post_attn + blk.mlp(blk.norm2(post_attn))
+        stages[f"post_block{layer_num:02d}"] = h
     stages["pre_merger"] = h
 
     # Merger internals isolated (run #7 plan): the RMSNorm, then the reshaped MLP input.

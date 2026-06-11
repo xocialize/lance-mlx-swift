@@ -262,10 +262,10 @@ public final class LanceUnderstanding {
                     print("[LANCE_DEBUG]   window_index exact-match=\(same) "
                         + (same == 1.0 ? "✓" : "✗ ORDERING DIVERGES"))
                 }
-                for stage in ["rotary_pos_emb", "post_patch_embed",
-                              "post_block00", "post_block07", "post_block15",
-                              "post_block23", "post_block31", "pre_merger",
-                              "merger_post_norm", "merger_post_mlp0"] {
+                // Print every stage present on BOTH sides, sorted — robust to row evolution.
+                let shared = Set(stages.keys).intersection(best.ref.keys)
+                    .subtracting(["window_index"]).sorted()
+                for stage in shared {
                     if let r = best.ref[stage], let s = stages[stage] {
                         print("[LANCE_DEBUG]   \(stage) cosine=\(cosine(s, r))")
                     }

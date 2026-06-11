@@ -406,14 +406,27 @@ public enum LanceVision {
                 let attentionMask =
                     fullattBlockIndexes.contains(i) ? fullAttentionMask : windowAttentionMask
 
-                hiddenStates = block(
-                    hiddenStates,
-                    attentionMask: attentionMask,
-                    rotaryPositionEmbedding: rotaryPosEmbReshaped
-                )
-                // Per-block ladder rungs (run #7 plan): block 0 + the fullatt boundaries.
-                if capture, [0, 7, 15, 23, 31].contains(i) {
+                if capture {
+                    // Fine ladder (run #8 plan): every block captured; the crater span
+                    // (16–23) additionally split into post-attention vs post-MLP. The block
+                    // is computed via its own submodules in exactly its residual order, so
+                    // the split rows are the block's true intermediates, not a recompute.
+                    let attnOut = block.attention(
+                        block.norm1(hiddenStates),
+                        attentionMask: attentionMask,
+                        rotaryPositionEmbedding: rotaryPosEmbReshaped)
+                    let postAttn = hiddenStates + attnOut
+                    if (16...23).contains(i) {
+                        debug.stages[String(format: "post_attn%02d", i)] = postAttn
+                    }
+                    hiddenStates = postAttn + block.mlp(block.norm2(postAttn))
                     debug.stages[String(format: "post_block%02d", i)] = hiddenStates
+                } else {
+                    hiddenStates = block(
+                        hiddenStates,
+                        attentionMask: attentionMask,
+                        rotaryPositionEmbedding: rotaryPosEmbReshaped
+                    )
                 }
             }
             if capture {
