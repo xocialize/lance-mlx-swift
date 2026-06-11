@@ -89,6 +89,13 @@ public enum LanceImageProcessing {
     }
 
     /// CIImage → normalized (1, C, H, W) float array at the smart-resized resolution.
+    ///
+    /// **E6 root-cause fix (run #12):** the resize is PIL-exact bicubic on uint8 RGB
+    /// (`LancePILResize`, verified ±1 LSB vs Pillow on all six fixtures — `PILResizeTests`),
+    /// in the HF processor's exact order: decode → resize(BICUBIC) on bytes → rescale 1/255
+    /// → normalize. The previous CoreImage bicubic path injected a ~6e-4 high-frequency
+    /// pixel deviation that the patch-embed projection and block-17 MLP amplified into
+    /// flipped boundary answers (the full 12-run causal chain lives in EXTERNAL-RESOLVE E6).
     public static func preprocess(image: CIImage) throws -> (MLXArray, THW) {
         let h = Int(image.extent.height)
         let w = Int(image.extent.width)
@@ -96,15 +103,45 @@ public enum LanceImageProcessing {
             height: h, width: w, factor: patchSize * mergeSize,
             minPixels: minPixels, maxPixels: maxPixels)
 
-        let processed = MediaProcessing.apply(image, processing: nil)
-        let resized = MediaProcessing.resampleBicubic(
-            processed, to: CGSize(width: targetW, height: targetH))
-        let normalized = MediaProcessing.normalize(
-            MediaProcessing.inSRGBToneCurveSpace(resized),
-            mean: (imageMean[0], imageMean[1], imageMean[2]),
-            std: (imageStd[0], imageStd[1], imageStd[2]))
-        // (1, C, H, W)
-        let array = MediaProcessing.asMLXArray(normalized)
+        // Decode to interleaved RGB8 in sRGB (what PIL's convert("RGB") sees).
+        let context = CIContext(options: [
+            .workingColorSpace: CGColorSpace(name: CGColorSpace.sRGB)!
+        ])
+        guard let cgImage = context.createCGImage(
+            image, from: image.extent, format: .RGBA8,
+            colorSpace: CGColorSpace(name: CGColorSpace.sRGB)!)
+        else { throw LanceError.imageProcessing("CIImage render failed") }
+        var rgba = [UInt8](repeating: 0, count: w * h * 4)
+        guard let cgContext = CGContext(
+            data: &rgba, width: w, height: h, bitsPerComponent: 8,
+            bytesPerRow: w * 4, space: CGColorSpace(name: CGColorSpace.sRGB)!,
+            bitmapInfo: CGImageAlphaInfo.premultipliedLast.rawValue)
+        else { throw LanceError.imageProcessing("CGContext creation failed") }
+        cgContext.draw(cgImage, in: CGRect(x: 0, y: 0, width: w, height: h))
+        var rgb = [UInt8](repeating: 0, count: w * h * 3)
+        for i in 0..<(w * h) {
+            rgb[i * 3] = rgba[i * 4]
+            rgb[i * 3 + 1] = rgba[i * 4 + 1]
+            rgb[i * 3 + 2] = rgba[i * 4 + 2]
+        }
+
+        // PIL-exact bicubic on bytes, THEN rescale + normalize (HF processor order).
+        let resized = LancePILResize.resize(
+            rgb: rgb, width: w, height: h, outWidth: targetW, outHeight: targetH)
+        let mean = imageMean.map { Float($0) }
+        let std = imageStd.map { Float($0) }
+        var chw = [Float](repeating: 0, count: 3 * targetH * targetW)
+        let plane = targetH * targetW
+        for y in 0..<targetH {
+            for x in 0..<targetW {
+                let p = (y * targetW + x) * 3
+                let o = y * targetW + x
+                chw[o] = (Float(resized[p]) / 255 - mean[0]) / std[0]
+                chw[plane + o] = (Float(resized[p + 1]) / 255 - mean[1]) / std[1]
+                chw[2 * plane + o] = (Float(resized[p + 2]) / 255 - mean[2]) / std[2]
+            }
+        }
+        let array = MLXArray(chw, [1, 3, targetH, targetW])
         return try patchify(images: [array])
     }
 }
