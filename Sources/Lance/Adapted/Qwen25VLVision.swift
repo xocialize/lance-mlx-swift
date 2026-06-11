@@ -411,7 +411,7 @@ public enum LanceVision {
             return outChannels >= kH && outChannels >= kW && kH == kW
         }
 
-        func sanitize(weights: [String: MLXArray]) -> [String: MLXArray] {
+        public func sanitize(weights: [String: MLXArray]) -> [String: MLXArray] {
             var sanitizedWeights = [String: MLXArray]()
 
             for (k, v) in weights {
