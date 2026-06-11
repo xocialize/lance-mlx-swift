@@ -122,16 +122,8 @@ public enum LanceVision {
             self._down.wrappedValue = Linear(hiddenDimensions, dimensions)
         }
 
-        /// E6 root-cause fix (L1 run #9): the SwiGLU runs in **fp32**, cast back on exit.
-        /// Block 17 is a massive-activation layer in this ViT — bf16 cannot hold the
-        /// silu(gate)·up range there and the error compounds through blocks 18+ (post_attn17
-        /// clean, post_block17 cratered, every case; magnitude scales with image content).
-        /// Whole-ViT-MLP promotion is cheap (~580-token sequences) and cleaner than a
-        /// block-17 special case. Same lever as the VoxCPM LocDiT/CFM fp32 promotion.
         public func callAsFunction(_ x: MLXArray) -> MLXArray {
-            let inputDtype = x.dtype
-            let h = x.asType(.float32)
-            return down(silu(gate(h)) * up(h)).asType(inputDtype)
+            down(silu(gate(x)) * up(x))
         }
     }
 
