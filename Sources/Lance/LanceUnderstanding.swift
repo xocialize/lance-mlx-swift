@@ -205,16 +205,34 @@ public final class LanceUnderstanding {
             throw LanceError.missingToken("<|image_pad|> not present after tokenization")
         }
 
-        // 4. Embed + merge ViT features at the pad positions.
+        // 4. Embed + merge ViT features at the pad positions. Indexing follows the
+        //    upstream `mergeInputIdsWithImageFeatures` pattern exactly (E6: an earlier
+        //    `embeds[0, indices] = features` spelling compiled but did not condition
+        //    generation — always assign (1, N, D) through [0..., indices, 0...] and use
+        //    the returned array).
         let inputIds = MLXArray(ids.map { Int32($0) }).expandedDimensions(axis: 0)  // (1, T)
-        var embeds = model.embedTokens(inputIds)
+        let textEmbeds = model.embedTokens(inputIds)
         let padPositions = ids.enumerated().filter { $0.element == videoPadId }.map(\.offset)
         guard padPositions.count == imageFeatures.dim(0) else {
             throw LanceError.imageProcessing(
                 "pad count \(padPositions.count) != ViT tokens \(imageFeatures.dim(0))")
         }
-        embeds[0, MLXArray(padPositions.map { Int32($0) })] =
-            imageFeatures.asType(embeds.dtype)
+        let embeds = Self.mergeImageFeatures(
+            textEmbeds: textEmbeds, imageFeatures: imageFeatures.asType(textEmbeds.dtype),
+            padPositions: padPositions)
+
+        if ProcessInfo.processInfo.environment["LANCE_DEBUG"] == "1" {
+            let featNorm = sqrt(imageFeatures.asType(.float32).square().sum()).item(Float.self)
+            let idx = MLXArray(padPositions.map { Int32($0) })
+            let delta = (embeds[0..., idx, 0...] - textEmbeds[0..., idx, 0...])
+                .asType(.float32).square().sum()
+            let textNorm = sqrt(textEmbeds[0..., idx, 0...].asType(.float32).square().sum())
+            print("[LANCE_DEBUG] vit features: \(imageFeatures.dim(0))×\(imageFeatures.dim(1)) "
+                + "L2=\(featNorm)")
+            print("[LANCE_DEBUG] pad-position embeds: pre-merge L2=\(sqrt(textNorm).item(Float.self)) "
+                + "merge delta L2=\(sqrt(delta).item(Float.self)) "
+                + "(delta must be >0 and O(feature norm) — 0 means the merge is a no-op)")
+        }
 
         // 5. 3D mRoPE position ids (port of _compute_position_ids, image path).
         let (positionIds, nextPosition) = Self.positionIds(
@@ -245,6 +263,24 @@ public final class LanceUnderstanding {
             position += 1
         }
         return tokenizer.decode(tokens: output)
+    }
+
+    /// Slot ViT features into the text embeddings at the pad positions — the upstream
+    /// `QwenVL.mergeInputIdsWithImageFeatures` indexing pattern, return-value based.
+    static func mergeImageFeatures(
+        textEmbeds: MLXArray, imageFeatures: MLXArray, padPositions: [Int]
+    ) -> MLXArray {
+        var result = textEmbeds
+        if result.ndim == 2 {
+            result = result[.newAxis, 0..., 0...]
+        }
+        let indices = MLXArray(padPositions.map { Int32($0) })
+        if imageFeatures.ndim == 2 {
+            result[0..., indices, 0...] = imageFeatures[.newAxis, 0..., 0...]
+        } else {
+            result[0..., indices, 0...] = imageFeatures
+        }
+        return result
     }
 
     /// 3D position ids for a single-image prompt: text positions advance on all axes;

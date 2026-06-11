@@ -76,15 +76,17 @@ enum MRoPE {
     }
 }
 
-/// SwiGLU MLP. Lance carries biases on gate/up (down has none) — diverges from stock Qwen2.5-VL.
+/// SwiGLU MLP. Bias-free on all three projections — like stock Qwen2.5. (The Lance-3B-bf16
+/// checkpoint ships no `gate_proj.bias`/`up_proj.bias`; only the *attention* projections carry
+/// biases. An earlier port declared gate/up bias:true and failed the L1 load with 144 missing keys.)
 public final class LanceMLP: Module, UnaryLayer {
     @ModuleInfo(key: "gate_proj") var gate: Linear
     @ModuleInfo(key: "up_proj") var up: Linear
     @ModuleInfo(key: "down_proj") var down: Linear
 
     public init(dimensions: Int, hiddenDimensions: Int) {
-        self._gate.wrappedValue = Linear(dimensions, hiddenDimensions, bias: true)
-        self._up.wrappedValue = Linear(dimensions, hiddenDimensions, bias: true)
+        self._gate.wrappedValue = Linear(dimensions, hiddenDimensions, bias: false)
+        self._up.wrappedValue = Linear(dimensions, hiddenDimensions, bias: false)
         self._down.wrappedValue = Linear(hiddenDimensions, dimensions, bias: false)
         super.init()
     }
