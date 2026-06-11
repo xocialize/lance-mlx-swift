@@ -26,14 +26,10 @@ REPO = Path("/Volumes/DEV_ARCHIVE/lance-mlx")
 
 
 def staged_forward(vm, pixel_values, grid_thw):
-    """VisionModel.__call__ with stage captures (mirrors mlx_vlm qwen2_5_vl/vision.py).
-
-    Run #11: the reference forward runs in **fp32** (bf16 weights promote per-op), matching
-    the Swift side's whole-ViT fp32 experiment — so cosine ≈ 1.0 means "no op divergence",
-    not "same bf16 rounding". (Pre-#11 references used the bf16 weight dtype.)
-    """
+    """VisionModel.__call__ with stage captures (mirrors mlx_vlm qwen2_5_vl/vision.py)."""
     stages = {}
-    h = vm.patch_embed(pixel_values.astype(mx.float32))
+    vit_dtype = vm.patch_embed.proj.weight.dtype
+    h = vm.patch_embed(pixel_values.astype(vit_dtype))
     stages["post_patch_embed"] = h  # pre-reorder
 
     rotary = vm.rot_pos_emb(grid_thw)

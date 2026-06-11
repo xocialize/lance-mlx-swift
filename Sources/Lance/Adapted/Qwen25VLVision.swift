@@ -370,15 +370,7 @@ public enum LanceVision {
 
         public func callAsFunction(_ hiddenStates: MLXArray, frames: [THW]) -> MLXArray {
             let capture = ProcessInfo.processInfo.environment["LANCE_DEBUG"] == "1"
-            // E6 run-#11 experiment: the ENTIRE ViT forward runs in fp32 (cast at entry,
-            // cast back at exit; bf16 weights promote to f32 per-op). Run #10 falsified
-            // "block-17 MLP is the source" — fp32-exact SwiGLU moved nothing (0.925→0.930),
-            // so the MLP only amplifies quiet upstream drift (blocks 0→16: 0.994→0.987).
-            // If features → ~1.0 here, the residual was accumulated bf16 numerics and this
-            // stays as the fix (~580-token sequences — cheap). If block 17 still craters,
-            // a real op divergence hides in the attention/norm path upstream — bisect there.
-            let outputDtype = patchEmbed.proj.weight.dtype
-            var hiddenStates = patchEmbed(hiddenStates.asType(.float32))
+            var hiddenStates = patchEmbed(hiddenStates)
             if capture { debug.stages["post_patch_embed"] = hiddenStates }
             let rotaryPosEmb = rotaryPositionEmbedding(frames)
 
@@ -461,8 +453,7 @@ public enum LanceVision {
             let reverseIndices = argSort(windowIndex, axis: 0)
             hiddenStates = hiddenStates[reverseIndices, 0...]
 
-            // Exit cast back to the weight dtype (fp32 forward is internal — see entry note).
-            return hiddenStates.asType(outputDtype)
+            return hiddenStates
         }
 
         private func isMLXWeight(_ array: MLXArray) -> Bool {
