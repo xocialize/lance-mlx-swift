@@ -217,7 +217,7 @@ public final class LanceUnderstanding {
             throw LanceError.imageProcessing(
                 "pad count \(padPositions.count) != ViT tokens \(imageFeatures.dim(0))")
         }
-        let embeds = Self.mergeImageFeatures(
+        let embeds = try Self.mergeImageFeatures(
             textEmbeds: textEmbeds, imageFeatures: imageFeatures.asType(textEmbeds.dtype),
             padPositions: padPositions)
 
@@ -265,22 +265,31 @@ public final class LanceUnderstanding {
         return tokenizer.decode(tokens: output)
     }
 
-    /// Slot ViT features into the text embeddings at the pad positions — the upstream
-    /// `QwenVL.mergeInputIdsWithImageFeatures` indexing pattern, return-value based.
+    /// Slot ViT features into the text embeddings at the pad positions.
+    ///
+    /// **E6 (run #2 evidence):** subscript-set scatter (`result[0..., indices, 0...] = features`,
+    /// and the `[0, indices]` spelling before it) is a **silent no-op** in mlx-swift here —
+    /// merge delta 0.0 on all six oracle cases while feature norms were healthy (900–2500).
+    /// So: no setters. The pad block is contiguous by construction (one `replaceSubrange`
+    /// inserts it), so the merge is pure slice + concatenate along the sequence axis.
     static func mergeImageFeatures(
         textEmbeds: MLXArray, imageFeatures: MLXArray, padPositions: [Int]
-    ) -> MLXArray {
-        var result = textEmbeds
-        if result.ndim == 2 {
-            result = result[.newAxis, 0..., 0...]
+    ) throws -> MLXArray {
+        guard let start = padPositions.first, let last = padPositions.last,
+              padPositions.count == last - start + 1
+        else {
+            throw LanceError.imageProcessing(
+                "pad positions not a single contiguous block (\(padPositions.count) positions)")
         }
-        let indices = MLXArray(padPositions.map { Int32($0) })
-        if imageFeatures.ndim == 2 {
-            result[0..., indices, 0...] = imageFeatures[.newAxis, 0..., 0...]
-        } else {
-            result[0..., indices, 0...] = imageFeatures
-        }
-        return result
+        let features = imageFeatures.ndim == 2
+            ? imageFeatures[.newAxis, 0..., 0...]   // (1, N, D)
+            : imageFeatures
+        var parts: [MLXArray] = []
+        if start > 0 { parts.append(textEmbeds[0..., ..<start, 0...]) }
+        parts.append(features)
+        let end = last + 1
+        if end < textEmbeds.dim(1) { parts.append(textEmbeds[0..., end..., 0...]) }
+        return concatenated(parts, axis: 1)
     }
 
     /// 3D position ids for a single-image prompt: text positions advance on all axes;
