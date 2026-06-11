@@ -222,46 +222,56 @@ public final class LanceUnderstanding {
             padPositions: padPositions)
 
         if ProcessInfo.processInfo.environment["LANCE_DEBUG"] == "1" {
-            // Branch-2 tensor diff (E6 run #5): compare against the Python reference dump
-            // (tools/dump_vit_reference.py) when present and the grid matches.
-            // pixel mismatch → preprocess/patchify; pixel match + feature mismatch → ViT/sanitize.
-            let refPath = ProcessInfo.processInfo.environment["LANCE_VIT_REF"]
-                ?? "/Users/dustinnielson/Development/MLXEngine/lance-vit-ref-case01.safetensors"
-            if FileManager.default.fileExists(atPath: refPath),
-               let ref = try? MLX.loadArrays(url: URL(fileURLWithPath: refPath)),
-               let refPixels = ref["pixel_values"], let refFeatures = ref["image_features"],
-               let refGrid = ref["grid_thw"]
-            {
-                let refDims = refGrid.asArray(Int32.self)
-                let gridMatches = refDims.count >= 3 && Int(refDims[0]) == frame.t
-                    && Int(refDims[1]) == frame.h && Int(refDims[2]) == frame.w
-                if gridMatches {
-                    func cosine(_ a: MLXArray, _ b: MLXArray) -> Float {
-                        let x = a.asType(.float32).flattened()
-                        let y = b.asType(.float32).flattened()
-                        guard x.dim(0) == y.dim(0) else { return .nan }
-                        let d = (x * y).sum()
-                        let n = sqrt(x.square().sum()) * sqrt(y.square().sum())
-                        return (d / n).item(Float.self)
-                    }
-                    let pixCos = cosine(patches, refPixels)
-                    let featCos = cosine(imageFeatures, refFeatures)
-                    print("[LANCE_DEBUG] ref-diff (vs Python, grid \(frame.t)×\(frame.h)×\(frame.w)): "
-                        + "pixel_values cosine=\(pixCos) "
-                        + "(swift \(patches.dim(0))×\(patches.dim(1)) vs ref \(refPixels.dim(0))×\(refPixels.dim(1))) · "
-                        + "features cosine=\(featCos) "
-                        + "(swift \(imageFeatures.dim(0))×\(imageFeatures.dim(1)) vs ref \(refFeatures.dim(0))×\(refFeatures.dim(1)))")
-                    print("[LANCE_DEBUG] ref-diff verdict: "
-                        + (pixCos < 0.999
-                            ? "PIXELS DIVERGE → preprocess/patchify (sRGB/bicubic/normalize order or grid)"
-                            : (featCos < 0.99
-                                ? "pixels match, FEATURES DIVERGE → ViT forward / sanitize transpose"
-                                : "both match — ViT chain is parity-clean; suspicion moves back to the LLM side")))
-                } else {
-                    print("[LANCE_DEBUG] ref-diff: grid mismatch — swift \(frame.t)×\(frame.h)×\(frame.w) "
-                        + "vs ref \(refDims.prefix(3).map(String.init).joined(separator: "×")) "
-                        + "→ smart-resize itself diverges (preprocess)")
+            // Branch-2 stage bisection (E6 run #7): compare against the Python reference
+            // dumps (tools/dump_vit_reference.py --all). All 6 fixture cases share grid
+            // 1×40×58, so the matching reference is selected by best pixel_values cosine,
+            // then every captured stage is diffed — the first stage that falls off pins
+            // the diverging op. window_index compares exactly; the rest by cosine.
+            func cosine(_ a: MLXArray, _ b: MLXArray) -> Float {
+                let x = a.asType(.float32).flattened()
+                let y = b.asType(.float32).flattened()
+                guard x.dim(0) == y.dim(0) else { return .nan }
+                let d = (x * y).sum()
+                let n = sqrt(x.square().sum()) * sqrt(y.square().sum())
+                return (d / n).item(Float.self)
+            }
+            let refDir = (ProcessInfo.processInfo.environment["LANCE_VIT_REF"]
+                .map { URL(fileURLWithPath: $0).deletingLastPathComponent() })
+                ?? URL(fileURLWithPath: "/Volumes/DEV_ARCHIVE")
+            let refURLs = ((try? FileManager.default.contentsOfDirectory(
+                at: refDir, includingPropertiesForKeys: nil)) ?? [])
+                .filter { $0.lastPathComponent.hasPrefix("lance-vit-ref-case")
+                    && $0.pathExtension == "safetensors" }
+                .sorted { $0.lastPathComponent < $1.lastPathComponent }
+            var best: (name: String, ref: [String: MLXArray], pixCos: Float)?
+            for url in refURLs {
+                guard let ref = try? MLX.loadArrays(url: url),
+                      let refPixels = ref["pixel_values"] else { continue }
+                let c = cosine(patches, refPixels)
+                if best == nil || (!c.isNaN && c > best!.pixCos) {
+                    best = (url.lastPathComponent, ref, c)
                 }
+            }
+            if let best {
+                print("[LANCE_DEBUG] ref-diff vs \(best.name) (best pixel match)")
+                print("[LANCE_DEBUG]   pixel_values cosine=\(best.pixCos)")
+                let stages = vision.debug.stages
+                if let refIdx = best.ref["window_index"], let swiftIdx = stages["window_index"] {
+                    let same = (swiftIdx.asType(.int32) .== refIdx.asType(.int32))
+                        .asType(.float32).mean().item(Float.self)
+                    print("[LANCE_DEBUG]   window_index exact-match=\(same) "
+                        + (same == 1.0 ? "✓" : "✗ ORDERING DIVERGES"))
+                }
+                for stage in ["rotary_pos_emb", "post_patch_embed", "post_block0", "pre_merger"] {
+                    if let r = best.ref[stage], let s = stages[stage] {
+                        print("[LANCE_DEBUG]   \(stage) cosine=\(cosine(s, r))")
+                    }
+                }
+                if let refFeatures = best.ref["image_features"] {
+                    print("[LANCE_DEBUG]   image_features cosine=\(cosine(imageFeatures, refFeatures))")
+                }
+                print("[LANCE_DEBUG]   read top-down: the FIRST stage below ~0.999 owns the bug; "
+                    + "all ≈1.0 except small final drift = numerics.")
             }
 
             let featNorm = sqrt(imageFeatures.asType(.float32).square().sum()).item(Float.self)

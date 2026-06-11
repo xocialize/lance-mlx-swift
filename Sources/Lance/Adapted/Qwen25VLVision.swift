@@ -352,8 +352,18 @@ public enum LanceVision {
             return mask.expandedDimensions(axis: 0).expandedDimensions(axis: 0)  // (1, 1, S, S)
         }
 
+        /// E6 bisection capture (not a Module parameter — plain reference box, ignored by
+        /// MLXNN reflection so weight-load verification is unaffected).
+        public final class DebugCapture {
+            public var stages: [String: MLXArray] = [:]
+            public init() {}
+        }
+        public let debug = DebugCapture()
+
         public func callAsFunction(_ hiddenStates: MLXArray, frames: [THW]) -> MLXArray {
+            let capture = ProcessInfo.processInfo.environment["LANCE_DEBUG"] == "1"
             var hiddenStates = patchEmbed(hiddenStates)
+            if capture { debug.stages["post_patch_embed"] = hiddenStates }
             let rotaryPosEmb = rotaryPositionEmbedding(frames)
 
             // Get window indices and sequence lengths
@@ -385,6 +395,10 @@ public enum LanceVision {
                 seqLen / spatialMergeUnit, spatialMergeUnit, -1)
             rotaryPosEmbReshaped = rotaryPosEmbReshaped[windowIndex, 0..., 0...]
             rotaryPosEmbReshaped = rotaryPosEmbReshaped.reshaped(seqLen, -1)
+            if capture {
+                debug.stages["window_index"] = windowIndex
+                debug.stages["rotary_pos_emb"] = rotaryPosEmbReshaped
+            }
 
             // Process through blocks
             for (i, block) in blocks.enumerated() {
@@ -397,7 +411,9 @@ public enum LanceVision {
                     attentionMask: attentionMask,
                     rotaryPositionEmbedding: rotaryPosEmbReshaped
                 )
+                if capture, i == 0 { debug.stages["post_block0"] = hiddenStates }
             }
+            if capture { debug.stages["pre_merger"] = hiddenStates }
 
             // Apply patch merger
             hiddenStates = patchMerger(hiddenStates)
