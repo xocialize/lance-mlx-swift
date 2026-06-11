@@ -411,9 +411,19 @@ public enum LanceVision {
                     attentionMask: attentionMask,
                     rotaryPositionEmbedding: rotaryPosEmbReshaped
                 )
-                if capture, i == 0 { debug.stages["post_block0"] = hiddenStates }
+                // Per-block ladder rungs (run #7 plan): block 0 + the fullatt boundaries.
+                if capture, [0, 7, 15, 23, 31].contains(i) {
+                    debug.stages[String(format: "post_block%02d", i)] = hiddenStates
+                }
             }
-            if capture { debug.stages["pre_merger"] = hiddenStates }
+            if capture {
+                debug.stages["pre_merger"] = hiddenStates
+                // Merger internals isolated: RMSNorm, then the first MLP projection.
+                let normed = patchMerger.layerNormQ(hiddenStates)
+                debug.stages["merger_post_norm"] = normed
+                debug.stages["merger_post_mlp0"] =
+                    patchMerger.mlp.0(normed.reshaped(-1, patchMerger.hiddenSize))
+            }
 
             // Apply patch merger
             hiddenStates = patchMerger(hiddenStates)

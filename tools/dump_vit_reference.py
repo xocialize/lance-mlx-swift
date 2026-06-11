@@ -59,12 +59,19 @@ def staged_forward(vm, pixel_values, grid_thw):
     cu_seqlens = mx.cumsum(mx.concatenate(cu_seqlens).astype(mx.int32), axis=0)
     cu_seqlens = mx.pad(cu_seqlens, (1, 0), mode="constant", constant_values=0)
 
+    capture_blocks = {0, 7, 15, 23, 31}
     for layer_num, blk in enumerate(vm.blocks):
         cu = cu_seqlens if layer_num in vm.fullatt_block_indexes else cu_window_seqlens
         h = blk(h, cu_seqlens=cu, rotary_pos_emb=rotary)
-        if layer_num == 0:
-            stages["post_block0"] = h
+        if layer_num in capture_blocks:
+            stages[f"post_block{layer_num:02d}"] = h
     stages["pre_merger"] = h
+
+    # Merger internals isolated (run #7 plan): the RMSNorm, then the reshaped MLP input.
+    ln_q_out = vm.merger.ln_q(h)
+    stages["merger_post_norm"] = ln_q_out
+    mlp_in = ln_q_out.reshape(-1, vm.merger.hidden_size)
+    stages["merger_post_mlp0"] = vm.merger.mlp[0](mlp_in)
 
     h = vm.merger(h)
     reverse = mx.argsort(window_index, axis=0)

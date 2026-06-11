@@ -262,7 +262,10 @@ public final class LanceUnderstanding {
                     print("[LANCE_DEBUG]   window_index exact-match=\(same) "
                         + (same == 1.0 ? "✓" : "✗ ORDERING DIVERGES"))
                 }
-                for stage in ["rotary_pos_emb", "post_patch_embed", "post_block0", "pre_merger"] {
+                for stage in ["rotary_pos_emb", "post_patch_embed",
+                              "post_block00", "post_block07", "post_block15",
+                              "post_block23", "post_block31", "pre_merger",
+                              "merger_post_norm", "merger_post_mlp0"] {
                     if let r = best.ref[stage], let s = stages[stage] {
                         print("[LANCE_DEBUG]   \(stage) cosine=\(cosine(s, r))")
                     }
@@ -270,8 +273,9 @@ public final class LanceUnderstanding {
                 if let refFeatures = best.ref["image_features"] {
                     print("[LANCE_DEBUG]   image_features cosine=\(cosine(imageFeatures, refFeatures))")
                 }
-                print("[LANCE_DEBUG]   read top-down: the FIRST stage below ~0.999 owns the bug; "
-                    + "all ≈1.0 except small final drift = numerics.")
+                print("[LANCE_DEBUG]   slope reading: smooth monotone decline across blocks "
+                    + "= bf16 kernel numerics (tag-with-caveat candidate); a STEP at one block "
+                    + "or at a merger row = residual op bug at that stage.")
             }
 
             let featNorm = sqrt(imageFeatures.asType(.float32).square().sum()).item(Float.self)
