@@ -1,0 +1,13 @@
+lance-mlx-swift
+Copyright 2026 Xocialize
+
+Swift/MLX port of Lance (ByteDance Intelligent Creation Lab's unified multimodal model,
+arXiv:2605.18678), ported from our Python MLX port (xocialize/lance-mlx, Apache-2.0).
+
+Portions of Sources/Lance/Adapted/ are adapted from mlx-swift-lm
+(https://github.com/ml-explore/mlx-swift-lm, MIT License) — specifically the Qwen2.5-VL
+vision tower and language-block reference implementations, which are fileprivate upstream.
+
+Lance model weights: Apache-2.0 (ByteDance Intelligent Creation Lab), published at
+mlx-community/Lance-3B-bf16 and siblings. Wan2.2 VAE: Apache-2.0 (Alibaba).
+Qwen2.5-VL: Apache-2.0 (Alibaba). This repository contains no model weights.
