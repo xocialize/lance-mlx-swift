@@ -239,6 +239,39 @@ public final class LanceUnderstanding {
             ids: ids, frame: frame, mergeSize: spatialMergeSize,
             videoPadId: videoPadId)
 
+        if ProcessInfo.processInfo.environment["LANCE_DEBUG"] == "1" {
+            // Structural checks (E6 run #3 plan).
+            print("[LANCE_DEBUG] T check: positionIds (3,1,\(positionIds.dim(2))) vs "
+                + "embeds T=\(embeds.dim(1)) ids=\(ids.count) "
+                + (positionIds.dim(2) == embeds.dim(1) ? "✓" : "✗ MISMATCH"))
+
+            // Vision ablation: prefill with REAL vs ZEROED features (no cache), compare the
+            // last-position logits. Identical → the answer position never attends vision
+            // (attention/mask/position/cache bug). Different but text still wrong → vision is
+            // attended but semantically inert (ViT correctness: sanitize/patchify/normalize).
+            let zeroedEmbeds = try Self.mergeImageFeatures(
+                textEmbeds: textEmbeds,
+                imageFeatures: MLXArray.zeros(
+                    [imageFeatures.dim(0), imageFeatures.dim(1)], dtype: textEmbeds.dtype),
+                padPositions: padPositions)
+            func lastLogits(_ e: MLXArray) -> MLXArray {
+                let h = model(
+                    inputEmbeddings: e, positionIds: positionIds, positionGroup: nil,
+                    mask: .causal, caches: nil)
+                return model.logits(h[0..., -1, 0...]).asType(.float32)
+            }
+            let realL = lastLogits(embeds)
+            let zeroL = lastLogits(zeroedEmbeds)
+            let maxDiff = abs(realL - zeroL).max().item(Float.self)
+            let argReal = argMax(realL, axis: -1).item(Int.self)
+            let argZero = argMax(zeroL, axis: -1).item(Int.self)
+            print("[LANCE_DEBUG] ablation (real vs zeroed features): "
+                + "max|Δlogit|=\(maxDiff) argmax real=\(argReal) zero=\(argZero) "
+                + (maxDiff < 1e-3
+                    ? "→ IDENTICAL: vision never reaches the query (attention/mask/pos/cache)"
+                    : "→ vision IS attended; if text still wrong, suspect ViT semantics"))
+        }
+
         // 6. Greedy decode with KV cache; both EOS ids stop.
         let caches = (0..<model.config.numHiddenLayers).map { _ in LanceKVCache() }
         var hidden = model(
