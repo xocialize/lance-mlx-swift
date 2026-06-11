@@ -50,11 +50,18 @@ enum MRoPE {
         let emb = concatenated([freqs, freqs], axis: -1)  // (3, B, T, headDim)
         var cosT = cos(emb)
         var sinT = sin(emb)
-        // Split along headDim at doubled-section boundaries; take plane i % 3 per chunk.
-        let doubled = mropeSection.map { $0 * 2 }
+        // E7 root-cause fix: HF/mlx-vlm split cos/sin by the section list REPEATED —
+        // [16,24,24,16,24,24] picking planes t,h,w,t,h,w — so rotate-half pairs (j, j+64)
+        // stay within one axis (t↔t, h↔h, w↔w). The previous element-doubled [32,48,48]
+        // split (inherited from mlx-swift-lm's transcription of NumPy's `mrope_section * 2`,
+        // which is LIST REPETITION, as element-wise multiply) paired t-frequencies with
+        // h-frequencies — a no-op for pure-text positions (t=h=w) but spatial scrambling at
+        // exactly the vision-token positions inside the decoder: content-reading degraded,
+        // fluency/EOS/prior answers untouched (the E7 signature).
+        let repeated = mropeSection + mropeSection
         var indices: [Int] = []
         var acc = 0
-        for s in doubled.dropLast() { acc += s; indices.append(acc) }
+        for s in repeated.dropLast() { acc += s; indices.append(acc) }
         cosT = concatenated(
             split(cosT, indices: indices, axis: -1).enumerated().map { i, m in m[i % 3] },
             axis: -1
