@@ -1,16 +1,30 @@
 # lance-mlx-swift
 
+> # ⚠️ ARCHIVAL — DROPPED (2026-06-12)
+>
+> **Lance was dropped on 2026-06-12.** Its non-generation components underperformed and were
+> holding the project back, so the port is no longer active development. This package is kept
+> **for forensics only** (the `v0.1.0` tag is retained); everything below is **historical**.
+>
+> - **Salvage:** the verified Qwen2.5-VL piece lives on as the separate package
+>   **`qwen25vl-mlx-swift`** (serving `imageAnalysis` / `videoAnalysis`).
+> - **Generation replacement:** the t2i/t2v direction moved to **Bernini-R**
+>   (`bernini-r-mlx-swift`).
+
+---
+
 Swift/MLX port of **Lance** (ByteDance Intelligent Creation Lab's unified multimodal model —
 [paper](https://arxiv.org/abs/2605.18678)) for Apple Silicon, ported from our
 production-validated Python port [xocialize/lance-mlx](https://github.com/xocialize/lance-mlx).
 Consumes the published [mlx-community Lance checkpoints](https://huggingface.co/collections/mlx-community/lance-mlx-6a0f3cd5648a74f8283fc8a4)
 **exactly as published** — no conversion, no re-upload.
 
-> **Status: L1 (image understanding) — code complete, parity validation pending.**
-> The dual-tower MoT backbone, weight loader, Qwen2.5-VL vision tower, and the
-> `x2t_image` VQA pipeline build and are key-contract-tested; the 6-case oracle parity
-> run against the Python reference has not yet been executed (requires Xcode/Metal).
-> Generation (t2i/t2v/editing) is not started — see `PORTING-SPEC.md` for the phase plan.
+> **Historical status (at drop): L1 (image understanding) — code complete, parity validation
+> pending.** The dual-tower MoT backbone, weight loader, Qwen2.5-VL vision tower, and the
+> `x2t_image` VQA pipeline built and were key-contract-tested; the 6-case oracle parity
+> run against the Python reference was never executed. The generation (t2i/t2v/editing) phase
+> plan in `PORTING-SPEC.md` was never started and is **abandoned** — generation moved to
+> `bernini-r-mlx-swift`.
 
 ## L1 usage (image VQA)
 
